@@ -1,0 +1,3 @@
+node_modules/
+# dist/ — committed so git-based installs work without a build step
+*.tsbuildinfo
