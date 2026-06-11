@@ -11,6 +11,7 @@ import {
   createVaultCrypto,
   DEFAULT_KEY_ID,
   LEGACY_DECODERS,
+  rotateKey,
   VaultCryptoError,
 } from "../dist/index.js";
 
@@ -334,5 +335,139 @@ describe("migration one-shot: legacy decode → canonical re-encrypt", () => {
       assert.equal(vault.decrypt(v2Row), PLAINTEXT, `${slug}: migration round-trip`);
       assert.equal(vault.keyId, "v2-vault-secret");
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// rotateKey — Q2 lock #4 (CROSS-REPO-WALK-DECISIONS-2-260611): built ONCE
+// here; decrypt with from-key → re-encrypt with to-key → {ciphertext, keyId}.
+// ---------------------------------------------------------------------------
+
+describe("rotateKey — canonical from-instance → to-instance rotation", () => {
+  const fromVault = createVaultCrypto({ secret: SECRET });
+  const toVault = createVaultCrypto({ secret: OTHER_SECRET, keyId: "v3-rotated" });
+
+  it("round-trips: rotated ciphertext decrypts under the to-key to the original plaintext", () => {
+    const original = fromVault.encrypt(PLAINTEXT);
+    const result = rotateKey(original, fromVault, toVault);
+    assert.equal(toVault.decrypt(result.ciphertext), PLAINTEXT);
+    assert.notEqual(result.ciphertext, original);
+  });
+
+  it("rotated ciphertext is canonical v2 format and NO LONGER decrypts under the from-key", () => {
+    const result = rotateKey(fromVault.encrypt(PLAINTEXT), fromVault, toVault);
+    assert.ok(result.ciphertext.startsWith("v2:"));
+    assert.equal(result.ciphertext.split(":").length, 4);
+    assert.throws(() => fromVault.decrypt(result.ciphertext), (err) => {
+      assert.equal(err.code, "AUTH");
+      return true;
+    });
+  });
+
+  it("stamps the to-instance keyId on the result (custom keyId)", () => {
+    const result = rotateKey(fromVault.encrypt(PLAINTEXT), fromVault, toVault);
+    assert.equal(result.keyId, "v3-rotated");
+  });
+
+  it("stamps the default keyId when the to-instance uses the default", () => {
+    const toDefault = createVaultCrypto({ secret: OTHER_SECRET });
+    const result = rotateKey(fromVault.encrypt(PLAINTEXT), fromVault, toDefault);
+    assert.equal(result.keyId, DEFAULT_KEY_ID);
+  });
+
+  it("wrong from-key THROWS AUTH (never silently re-encrypts garbage)", () => {
+    const ciphertext = fromVault.encrypt(PLAINTEXT);
+    const wrongFrom = createVaultCrypto({ secret: OTHER_SECRET });
+    assert.throws(() => rotateKey(ciphertext, wrongFrom, toVault), (err) => {
+      assert.ok(err instanceof VaultCryptoError);
+      assert.equal(err.code, "AUTH");
+      return true;
+    });
+  });
+
+  it("malformed ciphertext propagates FORMAT from the from-instance", () => {
+    assert.throws(() => rotateKey("not-an-envelope", fromVault, toVault), (err) => {
+      assert.equal(err.code, "FORMAT");
+      return true;
+    });
+  });
+
+  it("same-secret keyId-only rotation works (re-stamp under a new keyId)", () => {
+    const relabeled = createVaultCrypto({ secret: SECRET, keyId: "v2b-relabel" });
+    const result = rotateKey(fromVault.encrypt(PLAINTEXT), fromVault, relabeled);
+    assert.equal(result.keyId, "v2b-relabel");
+    assert.equal(relabeled.decrypt(result.ciphertext), PLAINTEXT);
+  });
+});
+
+describe("rotateKey — legacy decrypt-function path (domain migrations)", () => {
+  const toVault = createVaultCrypto({ secret: OTHER_SECRET });
+
+  for (const [slug, generate] of Object.entries(LEGACY_FIXTURE_GENERATORS)) {
+    it(`${slug}: rotates a legacy row to canonical v2 via a bound LEGACY_DECODERS fn`, () => {
+      const legacyRow = generate(PLAINTEXT, SECRET);
+      const result = rotateKey(legacyRow, (ct) => LEGACY_DECODERS[slug](ct, SECRET), toVault);
+      assert.ok(result.ciphertext.startsWith("v2:"), `${slug}: rotated row must be v2-prefixed`);
+      assert.equal(result.keyId, DEFAULT_KEY_ID);
+      assert.equal(toVault.decrypt(result.ciphertext), PLAINTEXT);
+    });
+  }
+
+  it("wrong legacy secret THROWS LEGACY_AUTH through the function path", () => {
+    const legacyRow = encryptLegacyHarvestHome(PLAINTEXT, SECRET);
+    assert.throws(
+      () => rotateKey(legacyRow, (ct) => LEGACY_DECODERS["harvest-home"](ct, OTHER_SECRET), toVault),
+      (err) => {
+        assert.ok(err instanceof VaultCryptoError);
+        assert.equal(err.code, "LEGACY_AUTH");
+        return true;
+      },
+    );
+  });
+});
+
+describe("rotateKey — argument validation", () => {
+  const vault = createVaultCrypto({ secret: SECRET });
+  const toVault = createVaultCrypto({ secret: OTHER_SECRET });
+
+  it("throws FORMAT on empty/non-string ciphertext", () => {
+    for (const bad of ["", null, undefined, 42]) {
+      assert.throws(() => rotateKey(bad, vault, toVault), (err) => {
+        assert.equal(err.code, "FORMAT");
+        return true;
+      });
+    }
+  });
+
+  it("throws CONFIG when fromCrypto is neither an instance nor a function", () => {
+    const ct = vault.encrypt(PLAINTEXT);
+    for (const bad of [null, undefined, {}, { decrypt: "nope" }, 42]) {
+      assert.throws(() => rotateKey(ct, bad, toVault), (err) => {
+        assert.equal(err.code, "CONFIG");
+        assert.match(err.message, /fromCrypto/);
+        return true;
+      });
+    }
+  });
+
+  it("throws CONFIG when toCrypto lacks encrypt or a non-empty keyId", () => {
+    const ct = vault.encrypt(PLAINTEXT);
+    for (const bad of [null, undefined, {}, { encrypt: vault.encrypt }, { encrypt: vault.encrypt, keyId: "" }]) {
+      assert.throws(() => rotateKey(ct, vault, bad), (err) => {
+        assert.equal(err.code, "CONFIG");
+        assert.match(err.message, /toCrypto/);
+        return true;
+      });
+    }
+  });
+
+  it("validates toCrypto BEFORE decrypting (no wasted decrypt on a doomed rotation)", () => {
+    let decryptCalls = 0;
+    const countingFrom = { decrypt: (ct) => { decryptCalls += 1; return vault.decrypt(ct); } };
+    assert.throws(() => rotateKey(vault.encrypt(PLAINTEXT), countingFrom, {}), (err) => {
+      assert.equal(err.code, "CONFIG");
+      return true;
+    });
+    assert.equal(decryptCalls, 0);
   });
 });

@@ -1,6 +1,6 @@
 {
   "name": "@rello-platform/vault-crypto",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Canonical SpokeApiKeyVault encryption for the Rello platform — scrypt KDF + AES-256-GCM, single v2 encoding (authTag last), config-injected secret, keyId versioning, + byte-faithful legacy decoders for the 7-spoke migration (CROSS-REPO-WALK-DECISIONS-260609 Q7 lock)",
   "type": "module",
   "main": "./dist/index.js",

@@ -107,6 +107,26 @@ function createVaultCrypto(options) {
   }
   return { encrypt, decrypt, keyId };
 }
+function rotateKey(ciphertext, fromCrypto, toCrypto) {
+  if (typeof ciphertext !== "string" || ciphertext.length === 0) {
+    throw new VaultCryptoError("FORMAT", "rotateKey requires a non-empty ciphertext string.");
+  }
+  const isFn = typeof fromCrypto === "function";
+  if (!isFn && (fromCrypto === null || typeof fromCrypto !== "object" || typeof fromCrypto.decrypt !== "function")) {
+    throw new VaultCryptoError(
+      "CONFIG",
+      "rotateKey `fromCrypto` must be a VaultCrypto instance (with .decrypt) or a bare decrypt function (e.g. a LEGACY_DECODERS wrapper closing over the legacy secret)."
+    );
+  }
+  if (toCrypto === null || typeof toCrypto !== "object" || typeof toCrypto.encrypt !== "function" || typeof toCrypto.keyId !== "string" || toCrypto.keyId.length === 0) {
+    throw new VaultCryptoError(
+      "CONFIG",
+      "rotateKey `toCrypto` must be a VaultCrypto instance with .encrypt and a non-empty keyId (create it via createVaultCrypto({ secret, keyId }))."
+    );
+  }
+  const plaintext = isFn ? fromCrypto(ciphertext) : fromCrypto.decrypt(ciphertext);
+  return { ciphertext: toCrypto.encrypt(plaintext), keyId: toCrypto.keyId };
+}
 function requireSecret(secret, who) {
   if (typeof secret !== "string" || secret.length === 0) {
     throw new VaultCryptoError("CONFIG", `${who}: legacy decode requires the non-empty legacy secret value (the spoke's former RELLO_APP_SECRET).`);
@@ -240,6 +260,7 @@ export {
   DEFAULT_KEY_ID,
   LEGACY_DECODERS,
   VaultCryptoError,
-  createVaultCrypto
+  createVaultCrypto,
+  rotateKey
 };
 //# sourceMappingURL=index.js.map
