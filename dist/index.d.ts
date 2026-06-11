@@ -31,6 +31,33 @@ interface CreateVaultCryptoOptions {
  * Key derivation (scrypt) is memoized: it runs once on first use.
  */
 declare function createVaultCrypto(options: CreateVaultCryptoOptions): VaultCrypto;
+/**
+ * A bare decrypt function — lets rotateKey work across legacy formats too:
+ * bind the legacy secret yourself, e.g.
+ * `(ct) => LEGACY_DECODERS["harvest-home"](ct, legacySecret)`.
+ */
+type RotateDecryptFn = (ciphertext: string) => string;
+interface RotateKeyResult {
+    /** The re-encrypted canonical ciphertext under the to-key instance. */
+    ciphertext: string;
+    /** The to-key instance's keyId — persist alongside the ciphertext (same transactional write). */
+    keyId: string;
+}
+/**
+ * Rotate a stored ciphertext from one key to another:
+ * decrypt with `fromCrypto` → re-encrypt with `toCrypto` → return
+ * `{ ciphertext, keyId }`. This function is PURE — it never touches storage;
+ * the caller updates the row transactionally (ciphertext + keyId together).
+ *
+ * `fromCrypto` accepts either a VaultCrypto instance (same-format secret
+ * rotation) or a bare decrypt function (legacy-format migrations via
+ * LEGACY_DECODERS — close over the legacy secret yourself).
+ *
+ * Decrypt failures propagate untouched (VaultCryptoError AUTH / FORMAT /
+ * LEGACY_AUTH / LEGACY_FORMAT) so callers can branch on `code` — a
+ * wrong-from-key rotation THROWS, it never silently re-encrypts garbage.
+ */
+declare function rotateKey(ciphertext: string, fromCrypto: Pick<VaultCrypto, "decrypt"> | RotateDecryptFn, toCrypto: Pick<VaultCrypto, "encrypt" | "keyId">): RotateKeyResult;
 type LegacyDecoder = (encryptedValue: string, secret: string) => string;
 /** Canonical spoke slugs (per @rello-platform/slugs APP_SLUGS). */
 type LegacySpokeSlug = "pathfinder-pro" | "harvest-home" | "home-ready" | "the-drumbeat" | "open-house-hub" | "newsletter-studio" | "market-intel";
@@ -42,4 +69,4 @@ type LegacySpokeSlug = "pathfinder-pro" | "harvest-home" | "home-ready" | "the-d
  */
 declare const LEGACY_DECODERS: Readonly<Record<LegacySpokeSlug, LegacyDecoder>>;
 
-export { type CreateVaultCryptoOptions, DEFAULT_KEY_ID, LEGACY_DECODERS, type LegacyDecoder, type LegacySpokeSlug, type VaultCrypto, VaultCryptoError, createVaultCrypto };
+export { type CreateVaultCryptoOptions, DEFAULT_KEY_ID, LEGACY_DECODERS, type LegacyDecoder, type LegacySpokeSlug, type RotateDecryptFn, type RotateKeyResult, type VaultCrypto, VaultCryptoError, createVaultCrypto, rotateKey };

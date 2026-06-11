@@ -73,10 +73,43 @@ Per the Q7 lock the rename is HARD-CUT (no dual-read): the new Railway var
 is added to all 7 services with the SAME value before any code lands, then
 one PR per spoke flips the read, then the old var is deleted.
 
+## Key rotation — `rotateKey` (v0.2.0, Q2 lock #4)
+
+Built ONCE here per `CROSS-REPO-WALK-DECISIONS-2-260611 §Q2 lock #4`:
+decrypt with the from-key instance → re-encrypt with the to-key instance →
+return `{ ciphertext, keyId }`. **Pure function — the caller persists the
+row transactionally** (new ciphertext + new keyId in the same write). A
+wrong from-key THROWS (`VaultCryptoError` with its original `code`); it
+never silently re-encrypts garbage.
+
+```ts
+import { createVaultCrypto, rotateKey, LEGACY_DECODERS } from "@rello-platform/vault-crypto";
+
+// Secret rotation (canonical v2 → canonical v2 under a new secret/keyId):
+const fromVault = createVaultCrypto({ secret: oldSecret });
+const toVault = createVaultCrypto({ secret: newSecret, keyId: "v3-vault-secret" });
+const { ciphertext, keyId } = rotateKey(row.encryptedValue, fromVault, toVault);
+await db.spokeApiKeyVault.update({
+  where: { id: row.id },
+  data: { encryptedValue: ciphertext, kmsKeyId: keyId }, // ONE transactional write
+});
+
+// Legacy-format domain migration (fromCrypto = bare decrypt function):
+const rotated = rotateKey(
+  row.encryptedValue,
+  (ct) => LEGACY_DECODERS["harvest-home"](ct, legacySecret),
+  toVault,
+);
+```
+
+`fromCrypto` is `VaultCrypto | (ciphertext: string) => string` — the
+function form lets any legacy decoder (or a domain-local one, e.g. HH's
+retired CRM-token stub) plug in by closing over its own secret.
+
 ## Install (git tag pin)
 
 ```bash
-npm i 'github:rello-platform/vault-crypto#v0.1.0' --save
+npm i 'github:rello-platform/vault-crypto#v0.2.0' --save
 ```
 
 `dist/` is committed so git-based installs work without a build step.

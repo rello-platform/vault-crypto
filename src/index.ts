@@ -179,6 +179,77 @@ export function createVaultCrypto(options: CreateVaultCryptoOptions): VaultCrypt
 }
 
 // ---------------------------------------------------------------------------
+// KEY ROTATION — built ONCE here per the Q2 lock
+// (CROSS-REPO-WALK-DECISIONS-2-260611 §Q2 lock #4): decrypt with the
+// from-key instance → re-encrypt with the to-key instance → return the new
+// ciphertext + keyId. The CALLER persists the row transactionally
+// (ciphertext and keyId/kmsKeyId must land in the same write).
+// ---------------------------------------------------------------------------
+
+/**
+ * A bare decrypt function — lets rotateKey work across legacy formats too:
+ * bind the legacy secret yourself, e.g.
+ * `(ct) => LEGACY_DECODERS["harvest-home"](ct, legacySecret)`.
+ */
+export type RotateDecryptFn = (ciphertext: string) => string;
+
+export interface RotateKeyResult {
+  /** The re-encrypted canonical ciphertext under the to-key instance. */
+  ciphertext: string;
+  /** The to-key instance's keyId — persist alongside the ciphertext (same transactional write). */
+  keyId: string;
+}
+
+/**
+ * Rotate a stored ciphertext from one key to another:
+ * decrypt with `fromCrypto` → re-encrypt with `toCrypto` → return
+ * `{ ciphertext, keyId }`. This function is PURE — it never touches storage;
+ * the caller updates the row transactionally (ciphertext + keyId together).
+ *
+ * `fromCrypto` accepts either a VaultCrypto instance (same-format secret
+ * rotation) or a bare decrypt function (legacy-format migrations via
+ * LEGACY_DECODERS — close over the legacy secret yourself).
+ *
+ * Decrypt failures propagate untouched (VaultCryptoError AUTH / FORMAT /
+ * LEGACY_AUTH / LEGACY_FORMAT) so callers can branch on `code` — a
+ * wrong-from-key rotation THROWS, it never silently re-encrypts garbage.
+ */
+export function rotateKey(
+  ciphertext: string,
+  fromCrypto: Pick<VaultCrypto, "decrypt"> | RotateDecryptFn,
+  toCrypto: Pick<VaultCrypto, "encrypt" | "keyId">,
+): RotateKeyResult {
+  if (typeof ciphertext !== "string" || ciphertext.length === 0) {
+    throw new VaultCryptoError("FORMAT", "rotateKey requires a non-empty ciphertext string.");
+  }
+  const isFn = typeof fromCrypto === "function";
+  if (!isFn && (fromCrypto === null || typeof fromCrypto !== "object" || typeof fromCrypto.decrypt !== "function")) {
+    throw new VaultCryptoError(
+      "CONFIG",
+      "rotateKey `fromCrypto` must be a VaultCrypto instance (with .decrypt) or a bare decrypt function (e.g. a LEGACY_DECODERS wrapper closing over the legacy secret).",
+    );
+  }
+  if (
+    toCrypto === null ||
+    typeof toCrypto !== "object" ||
+    typeof toCrypto.encrypt !== "function" ||
+    typeof toCrypto.keyId !== "string" ||
+    toCrypto.keyId.length === 0
+  ) {
+    throw new VaultCryptoError(
+      "CONFIG",
+      "rotateKey `toCrypto` must be a VaultCrypto instance with .encrypt and a non-empty keyId (create it via createVaultCrypto({ secret, keyId })).",
+    );
+  }
+
+  // Decrypt with the from-key. Errors (AUTH/FORMAT/LEGACY_*) propagate with
+  // their original code + context — wrong from-key MUST throw, never rotate.
+  const plaintext = isFn ? fromCrypto(ciphertext) : fromCrypto.decrypt(ciphertext);
+
+  return { ciphertext: toCrypto.encrypt(plaintext), keyId: toCrypto.keyId };
+}
+
+// ---------------------------------------------------------------------------
 // LEGACY DECODERS — byte-faithful to each spoke's origin/main implementation.
 // Each takes (encryptedValue, secret) and returns the plaintext, throwing
 // VaultCryptoError (LEGACY_FORMAT / LEGACY_AUTH) with context on failure.
