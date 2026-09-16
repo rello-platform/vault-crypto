@@ -1,6 +1,6 @@
 {
   "name": "@rello-platform/vault-crypto",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Canonical SpokeApiKeyVault encryption for the Rello platform — scrypt KDF + AES-256-GCM, single v2 encoding (authTag last), config-injected secret, keyId versioning, + byte-faithful legacy decoders for the 7-spoke migration (CROSS-REPO-WALK-DECISIONS-260609 Q7 lock)",
   "type": "module",
   "main": "./dist/index.js",
@@ -21,12 +21,12 @@
     "node": ">=22 <23"
   },
   "scripts": {
-    "build": "tsup",
+    "compile": "tsup",
     "dev": "tsup --watch",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
-    "test": "npm run build && node --test tests/*.test.mjs",
-    "prepublishOnly": "npm run build"
+    "test": "npm run compile && node --test tests/*.test.mjs",
+    "prepublishOnly": "npm run compile"
   },
   "publishConfig": {
     "registry": "https://npm.pkg.github.com"
