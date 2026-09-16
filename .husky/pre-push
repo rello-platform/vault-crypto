@@ -1,0 +1,21 @@
+#!/usr/bin/env sh
+# Pre-push: a v* tag may not carry a stale dist/.
+#
+# This package is installed from GIT TAGS — a consumer receives whatever dist/
+# was committed at the tag, and the tag ruleset makes a pushed tag PERMANENT.
+# Nothing else verifies the committed output came from the committed input: a
+# tag can carry src/ from one commit and dist/ from an older one, and every
+# consumer installs the stale output with a tsc that typechecks happily against
+# the stale .d.ts. The tag push is the only moment to catch it.
+#
+# ONE IMPLEMENTATION: the logic lives in @rello-platform/scripts (tag-dist-gate
+# -> check-dist-fresh). This file is a shim on purpose. Requires exit 0: STALE
+# blocks, UNVERIFIED blocks too. No `|| true`. A package that legitimately has
+# no build/dist declares it in .dist-fresh-exempt with a reason. (A-124)
+set -e
+_refs=$(cat)
+if ! printf '%s\n' "$_refs" | grep -q 'refs/tags/'; then
+  exit 0
+fi
+printf '%s\n' "$_refs" | npx --yes "github:rello-platform/scripts#v0.20.0" tag-dist-gate
+npx --yes "github:rello-platform/scripts#v0.20.0" check-lockfile-ssh

@@ -26,7 +26,8 @@
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "test": "npm run compile && node --test tests/*.test.mjs",
-    "prepublishOnly": "npm run compile"
+    "prepublishOnly": "npm run compile",
+    "hooks": "git config core.hooksPath .husky || true"
   },
   "publishConfig": {
     "registry": "https://npm.pkg.github.com"
